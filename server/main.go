@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -25,8 +28,6 @@ func NewUSDBRL(price string, timestamp string) *USDBRL {
 var db *sql.DB
 
 func main() {
-	// Connect to SQLite database
-	// If the database does not exist, it will be created
 	var err error
 	db, err = sql.Open("sqlite3", "./database.db")
 	if err != nil {
@@ -51,17 +52,23 @@ func main() {
 	fmt.Println("Database and table created successfully.")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/dolar", DolarPrice)
+	mux.HandleFunc("/cotacao", DolarPrice)
 	http.ListenAndServe(":8080", mux)
 }
 
 func DolarPrice(w http.ResponseWriter, r *http.Request) {
-	req, err := http.NewRequest("GET", "https://economia.awesomeapi.com.br/json/last/USD-BRL", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://economia.awesomeapi.com.br/json/last/USD-BRL", nil)
 	if err != nil {
 		panic(err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Println("Request timed out, exceeded 200ms")
+		}
 		panic(err)
 	}
 	defer resp.Body.Close()
@@ -70,7 +77,6 @@ func DolarPrice(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-	//pegar o json e dar unmarshel
 	var data map[string]USDBRL
 	if err := json.Unmarshal([]byte(string(body)), &data); err != nil {
 		fmt.Println("Error parsing JSON:", err)
@@ -82,18 +88,22 @@ func DolarPrice(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 	w.Header().Set("Content-Type", "application/json")
-
 	w.Write([]byte(body))
 }
 
 func insertQuote(db *sql.DB, quote *USDBRL) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
 	stmt, err := db.Prepare("INSERT INTO quote_history (price, timestamp) VALUES (?, ?);")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(quote.Price, quote.Timestamp)
+	_, err = stmt.ExecContext(ctx, quote.Price, quote.Timestamp)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Println("Request timed out, exceeded 10ms")
+		}
 		panic(err)
 	}
 	return nil
